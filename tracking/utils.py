@@ -164,8 +164,9 @@ def extract_coords_and_last_stop(rs):
 
     return coords, last_stop_name
 
-def get_progress(trip):
-    now = timezone.now()
+def get_progress(trip, now=None):
+    if now is None:
+        now = timezone.now()
     start = trip.trip_start_at
     end = trip.trip_end_at
     print(f"[DEBUG] get_progress: trip_id={trip.pk}, now={now}, start={start}, end={end}")

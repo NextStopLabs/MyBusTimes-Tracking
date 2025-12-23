@@ -250,7 +250,13 @@ class fleet(models.Model):
     last_modified_by = models.ForeignKey(CustomUser, blank=False, on_delete=models.SET_NULL, null=True, related_name='fleet_modified_by', db_index=True)
     summary = models.TextField(blank=True)
 
-    history = HistoricalRecords()
+    history = HistoricalRecords(exclude=[
+        "sim_lat",
+        "sim_lon",
+        "sim_heading",
+        "current_trip",
+        "updated_at",
+    ])
 
     sim_lat = models.FloatField(blank=True, null=True)
     sim_lon = models.FloatField(blank=True, null=True)
