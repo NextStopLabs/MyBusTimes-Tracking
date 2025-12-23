@@ -1,0 +1,313 @@
+from boto3.s3.transfer import TransferConfig
+from dotenv import load_dotenv
+from pathlib import Path
+import os
+
+from django.utils.translation import gettext_lazy as _
+
+# Build paths inside the project like this: BASE_DIR / 'subdir'.
+BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_URL = "https://www.mybustimes.cc"
+load_dotenv(BASE_DIR / "mybustimes/.env")
+
+DEBUG = os.getenv("DEBUG", "False").lower() in ("true", "1", "yes")
+SECRET_KEY = os.environ["SECRET_KEY"]
+ALLOWED_HOSTS = ['*']
+
+
+DISCORD_GUILD_ID = os.environ["DISCORD_GUILD_ID"]
+DISCORD_BOT_TOKEN = os.environ["DISCORD_BOT_API_TOKEN"]
+
+DISCORD_FOR_SALE_WEBHOOK = os.environ["DISCORD_FOR_SALE_WEBHOOK"]
+DISCORD_FOR_SALE_CHANNEL_ID = os.environ["DISCORD_FOR_SALE_CHANNEL_ID"]
+DISCORD_OPERATOR_TYPE_REQUESTS_CHANNEL_WEBHOOK = os.environ["DISCORD_OPERATOR_TYPE_REQUESTS_CHANNEL_WEBHOOK"]
+DISCORD_TYPE_REQUEST_WEBHOOK = os.environ["DISCORD_TYPE_REQUEST_WEBHOOK"]
+DISCORD_WEB_ERROR_WEBHOOK = os.environ["DISCORD_WEB_ERROR_WEBHOOK"]
+DISCORD_404_ERROR_WEBHOOK = os.environ["DISCORD_404_ERROR_WEBHOOK"]
+
+ROUTEING_URL = os.getenv("VALHALLA_URL")
+
+CRON_SECRET = os.getenv("CRON_SECRET")
+
+# Cloudflare Turnstile Site Key
+CF_SITE_KEY = os.getenv("CF_SITE_KEY")
+CF_SECRET_KEY = os.getenv("CF_SECRET_KEY")
+
+# Discord Bot API URL
+DISCORD_BOT_API_URL = os.getenv("DISCORD_BOT_API_URL")
+
+# Channel IDs for Discord
+DISCORD_LIVERY_ID = os.getenv("DISCORD_LIVERY_ID")
+DISCORD_MIGRATION_ERROR_ID = os.getenv("DISCORD_MIGRATION_ERROR_ID")
+DISCORD_REPORTS_CHANNEL_ID = os.environ["DISCORD_REPORTS_CHANNEL_ID"]
+DISCORD_GAME_ID = os.getenv("DISCORD_GAME_ID")
+DISCORD_OPERATOR_LOGS_ID = os.getenv("DISCORD_OPERATOR_LOGS_ID")
+
+STRIPE_SECRET_KEY = os.environ["STRIPE_SECRET_KEY"]
+STRIPE_PUBLISHABLE_KEY = os.environ["STRIPE_PUBLISHABLE_KEY"]
+STRIPE_WEBHOOK_SECRET = os.environ["STRIPE_WEBHOOK_SECRET"]
+STRIPE_MONTHLY_PRICE_ID = os.environ["PRICE_ID_MONTHLY"]
+STRIPE_YEARLY_PRICE_ID = os.environ["PRICE_ID_YEARLY"]
+STRIPE_CUSTOM_PRICE_ID = os.environ["PRICE_ID_CUSTOM"]
+STRIPE_BILLING_PORTAL_URL = os.environ["STRIPE_BILLING_PORTAL_URL"]
+
+CSRF_TRUSTED_ORIGINS = [
+    'https://test.mybustimes.cc',
+    'https://mybustimes.cc',
+    'https://www.mybustimes.cc',
+    'https://local-dev.mybustimes.cc',
+    'https://bm-01.tail7328e3.ts.net',
+    'https://bm-02.tail7328e3.ts.net',
+    'https://k3s-eu1.kaicoding.cc:8080',
+    'http://k3s-eu1.kaicoding.cc:8080',
+    'https://eu1-origin.mybustimes.cc',
+    'https://eu2-origin.mybustimes.cc',
+]
+
+AUTH_USER_MODEL = 'main.CustomUser'
+USE_X_FORWARDED_HOST = True
+
+INSTALLED_APPS = [
+    # Core Django (minimal)
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'django.contrib.sites',
+
+    # Your logic
+    'main',
+
+    # API
+    'rest_framework',
+    'corsheaders',
+    
+    # Other
+    'markdownx',
+    'django_select2',
+    'django_extensions',
+    'simple_history',
+
+    'tracking',
+    'fleet',
+    'routes',
+]
+
+
+MIDDLEWARE = []
+
+
+MIDDLEWARE.extend([
+    'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'simple_history.middleware.HistoryRequestMiddleware',
+    'mybustimes.middleware.rest_last_active.UpdateLastActiveMiddleware',
+    'django_ratelimit.middleware.RatelimitMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.locale.LocaleMiddleware',
+])
+
+CORS_ALLOW_ALL_ORIGINS = True
+
+RATELIMIT_VIEW = 'main.views.ratelimit_view'
+
+INTERNAL_IPS = [
+    "127.0.0.1",  # localhost
+]
+
+ROOT_URLCONF = 'mybustimes.urls'
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        "rest_framework.authentication.SessionAuthentication",
+        "rest_framework.authentication.BasicAuthentication",
+    ),
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
+    'PAGE_SIZE': 100,
+    'DEFAULT_FILTER_BACKENDS': ('django_filters.rest_framework.DjangoFilterBackend',)
+    
+}
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+                'django.template.context_processors.i18n',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+                'main.context_processors.theme_settings',
+            ],
+        },
+    },
+]
+
+
+
+ASGI_APPLICATION = 'mybustimes.asgi.application'
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    },
+}
+
+try:
+    from .settings_local import *
+except ImportError:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv("DB_NAME"),
+            'USER': os.getenv("DB_USER"),
+            'PASSWORD': os.getenv("DB_PASSWORD"),
+            'HOST': os.getenv("DB_HOST"),
+            'PORT': os.getenv("DB_PORT"),
+            "CONN_MAX_AGE": 60,
+        }
+    }
+
+AUTH_PASSWORD_VALIDATORS = [
+    {
+        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+    },
+]
+
+
+AUTHENTICATION_BACKENDS = [
+    'main.backends.CustomOIDCAuthenticationBackend',
+    'mybustimes.auth_backends.PHPFallbackBackend',
+    'django.contrib.auth.backends.ModelBackend',  # fallback to default just in case
+]
+
+OIDC_RP_CLIENT_ID = os.environ["OIDC_RP_CLIENT_ID"]
+OIDC_RP_CLIENT_SECRET = os.environ["OIDC_RP_CLIENT_SECRET"]
+OIDC_OP_AUTHORIZATION_ENDPOINT = "https://secure.mybustimes.cc/authorize"
+OIDC_OP_TOKEN_ENDPOINT = "https://secure.mybustimes.cc/api/oidc/token"
+OIDC_OP_USER_ENDPOINT = "https://secure.mybustimes.cc/api/oidc/userinfo"
+OIDC_OP_JWKS_ENDPOINT = "https://secure.mybustimes.cc/.well-known/jwks.json"
+OIDC_OP_ISSUER = "https://secure.mybustimes.cc"
+OIDC_RP_SIGN_ALGO = "RS256"
+OIDC_RP_SCOPES = "openid email profile"
+OIDC_STORE_ACCESS_TOKEN = True
+OIDC_STORE_ID_TOKEN = True
+SESSION_ENGINE = "django.contrib.sessions.backends.db"  # important if not already set
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+SESSION_COOKIE_SAMESITE = "Lax"  
+LOGIN_URL = "/oidc/authenticate/"
+LOGOUT_URL = "/oidc/logout/"
+
+LANGUAGE_CODE = 'en-gb'
+TIME_ZONE = 'Europe/London'
+USE_I18N = True
+USE_L10N = True
+USE_TZ = True
+
+DEFAULT_FROM_EMAIL = 'MyBusTimes <no-reply@mybustimes.cc>'
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = os.getenv("SMTP_HOST")
+EMAIL_PORT = os.getenv("SMTP_PORT")
+EMAIL_HOST_USER = os.getenv("SMTP_USER")
+EMAIL_HOST_PASSWORD = os.getenv("SMTP_PASSWORD")
+EMAIL_USE_TLS = False
+EMAIL_USE_SSL = True
+
+AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
+AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
+
+AWS_STORAGE_BUCKET_NAME = os.getenv('AWS_STORAGE_BUCKET_NAME')
+AWS_S3_ENDPOINT_URL = os.getenv('AWS_S3_ENDPOINT_URL')
+    
+AWS_S3_CUSTOM_DOMAIN = "cdn.mybustimes.cc"
+AWS_S3_ADDRESSING_STYLE = "path"
+AWS_S3_SIGNATURE_VERSION = "s3v4"
+AWS_S3_REGION_NAME = "garage"
+
+AWS_S3_FILE_OVERWRITE = False
+AWS_DEFAULT_ACL = None
+
+AWS_S3_CONFIG = {
+    "addressing_style": "path",
+    "signature_version": "s3v4",
+}
+
+AWS_LOCATION = "mybustimes/staticfiles"
+AWS_S3_CHECKSUM = False
+AWS_S3_USE_THREADS = False
+AWS_S3_CHECKSUM = False
+
+AWS_S3_TRANSFER_CONFIG = TransferConfig(
+    multipart_threshold=1024 * 1024 * 500,  # 500 MB
+    multipart_chunksize=1024 * 1024 * 500,
+    max_concurrency=1,
+    use_threads=False,
+)
+
+STORAGES = {
+    "default": {
+        "BACKEND": "mybustimes.storages.MediaStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "mybustimes.storages.StaticStorage",
+    },
+}
+
+STATIC_URL = "https://cdn.mybustimes.cc/mybustimes/mybustimes/staticfiles/"
+MEDIA_URL = "https://cdn.mybustimes.cc/mybustimes/mybustimes/media/"
+
+MEDIA_ROOT = BASE_DIR / "media"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+LOGIN_URL = '/account/login/'
+LOGIN_REDIRECT_URL = '/'
+LOGOUT_REDIRECT_URL = '/'
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'ERROR',
+    },
+    'loggers': {
+        'mozilla_django_oidc': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+        },
+    }
+
+}
+
+DATA_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024  # 100MB
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 30000

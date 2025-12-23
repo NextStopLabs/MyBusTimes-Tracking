@@ -1,0 +1,34 @@
+services:
+  web:
+    build: ./MyBusTimes
+    container_name: mybustimes
+    command: >
+      gunicorn mybustimes.asgi:application
+      --workers 10
+      --worker-class uvicorn.workers.UvicornWorker
+      --bind 0.0.0.0:8000
+      --log-level info
+    env_file: mybustimes/.env
+    restart: always
+    depends_on:
+      - db
+    volumes:
+      - static:/MyBusTimes/staticfiles
+      - media:/MyBusTimes/media
+    ports:
+      - "6060:8000"
+      
+  db:
+    image: 'postgres:16'
+    container_name: postgres-db-mbt
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mybustimes
+      POSTGRES_USER: mybustimesDBuser
+      POSTGRES_PASSWORD: CHANGE-ME-DO-NOT-KEEP-THIS
+    volumes:
+      - 'postgres-data:/var/lib/postgresql/data'
+      
+volumes:
+  static:
+  media:

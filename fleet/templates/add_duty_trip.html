@@ -1,0 +1,371 @@
+{% extends 'mbtbase.html' %}
+{% load static %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'css/narrow.css' %}">
+<style>
+  .trip-group {
+    margin-top: 15px;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5em;
+  }
+
+  .trip-group label {
+    display: block;
+    margin-top: 5px;
+  }
+
+  .trip-group input {
+    width: 100%;
+    padding: 5px;
+    box-sizing: border-box;
+  }
+</style>
+{{ available_routes|json_script:"route-data" }}
+{% endblock %}
+
+{% block title %}Add Duty for {{ operator.operator_slug }}{% endblock %}
+
+{% block content %}
+<h2>Add Trip for Duty: {{ duty_instance.duty_name }}</h2>
+<form method="post" class="fleet-edit-wrapper">
+  {% csrf_token %}
+  <div>
+    <label for="trip_times">Trips:</label>
+    <button type="button" id="add-trip">Add Trip</button>
+    <div id="trips-container"></div>
+  </div>
+
+  <div style="margin-top: 30px;">
+    <h3>Repeat Trips</h3>
+    <label for="repeat-count">Repeat how many times:</label>
+    <input type="number" id="repeat-count" min="1" value="1">
+
+    <label for="break-minutes">Break between each trip set (in minutes):</label>
+    <input type="number" id="break-minutes" min="0" value="5">
+
+    <button type="button" id="repeat-trips" style="margin-top: 10px;">Repeat Trips</button>
+  </div>
+
+  <button type="submit" style="margin-top: 20px;">Save Trips</button>
+</form>
+
+<h3 style="margin-top:30px;">Auto-Generate Trips From Timetable</h3>
+<div class="fleet-edit-wrapper">
+  <label>First Trip Start Time:</label>
+  <input type="time" id="auto-first-start">
+
+  <label>Select Route:</label>
+  <select id="auto-route-select">
+    {% for r in available_routes %}
+    <option value="{{ r.id }}">{{ r.route_num }} - {{ r.route_inbound_destination }} →
+      {{ r.route_outbound_destination }}</option>
+    {% endfor %}
+  </select>
+
+  <label>Direction:</label>
+  <select id="auto-direction">
+    <option value="outbound">Outbound</option>
+    <option value="inbound">Inbound</option>
+  </select>
+
+  <button type="button" id="auto-generate-btn" style="margin-top:10px;">
+    Preview Auto-Generated Trips
+  </button>
+
+  <div id="auto-generate-status" style="margin-top:10px; color:var(--text-muted);"></div>
+</div>
+<script>
+  // Utility to add minutes to a time string "HH:MM"
+  function addMinutes(time, minutesToAdd) {
+    const [hours, minutes] = time.split(':').map(Number);
+    const date = new Date(0, 0, 0, hours, minutes + minutesToAdd);
+    const h = String(date.getHours()).padStart(2, '0');
+    const m = String(date.getMinutes()).padStart(2, '0');
+    return `${h}:${m}`;
+  }
+
+  // Function to create a trip block (used for both adding and repeating)
+  function createTripGroup(values = {}) {
+    const tripGroup = document.createElement('div');
+    tripGroup.classList.add('trip-group');
+
+    function addInput(labelText, type, name, required = true, value = '') {
+      const label = document.createElement('label');
+      label.textContent = labelText;
+      const input = document.createElement('input');
+      input.type = type;
+      input.name = name;
+      if (required) input.required = true;
+      input.value = value || '';
+      tripGroup.appendChild(label);
+      tripGroup.appendChild(input);
+    }
+
+    // Route Dropdown
+    const routeLabel = document.createElement('label');
+    routeLabel.textContent = 'Select Route:';
+    const routeSelect = document.createElement('select');
+    routeSelect.name = 'route_select[]';
+
+    const routes = JSON.parse(document.getElementById('route-data').textContent);
+    routes.forEach(route => {
+      const option = document.createElement('option');
+      option.value = route.id;
+      option.textContent =
+        `${route.route_num} - ${route.route_inbound_destination} to ${route.route_outbound_destination}`;
+
+      if (values.route_id == route.id || values.route_num == route.route_num) {
+        option.selected = true;
+      }
+
+      routeSelect.appendChild(option);
+    });
+
+    tripGroup.appendChild(routeLabel);
+    tripGroup.appendChild(routeSelect);
+
+    // Route Number Field
+    addInput('Route Number:', 'text', 'route_num[]', true, values.route_num);
+
+    routeSelect.addEventListener('change', function () {
+      const selected = routes.find(r => r.id == this.value);
+      tripGroup.querySelector('input[name="route_num[]"]').value =
+        selected ? selected.route_num : '';
+    });
+
+    addInput('Start Time:', 'time', 'start_time[]', true, values.start_time);
+    addInput('End Time:', 'time', 'end_time[]', true, values.end_time);
+    addInput('Start At:', 'text', 'start_at[]', true, values.start_at);
+    addInput('End At:', 'text', 'end_at[]', true, values.end_at);
+
+    // -------- UPDATED: INBOUND CHECKBOX WITH HIDDEN INPUT --------
+    const inboundLabel = document.createElement('label');
+    inboundLabel.textContent = "Inbound?";
+    const inboundCheck = document.createElement('input');
+    inboundCheck.type = "checkbox";
+    inboundCheck.name = "inbound_trip_check[]";
+    inboundCheck.value = "true";
+
+    // Add a hidden input that will always be submitted
+    const inboundHidden = document.createElement('input');
+    inboundHidden.type = "hidden";
+    inboundHidden.name = "inbound_trip[]";
+    inboundHidden.value = "false";
+
+    // When checkbox changes, update the hidden input
+    inboundCheck.addEventListener('change', function() {
+      inboundHidden.value = this.checked ? "true" : "false";
+    });
+
+    // backend sends either direction="inbound" OR inbound=true
+    if (values.inbound === true || values.direction === "inbound") {
+      inboundCheck.checked = true;
+      inboundHidden.value = "true";
+    }
+
+    tripGroup.appendChild(inboundLabel);
+    tripGroup.appendChild(inboundCheck);
+    tripGroup.appendChild(inboundHidden);
+    // ----------------------------------------
+
+    // Remove button
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.textContent = 'Remove Trip';
+    removeBtn.style.marginTop = '10px';
+    removeBtn.addEventListener('click', () => {
+      tripGroup.remove();
+    });
+    tripGroup.appendChild(removeBtn);
+
+    return tripGroup;
+  }
+
+
+  // Add Trip button
+  document.getElementById('add-trip').addEventListener('click', function (e) {
+    e.preventDefault();
+    const container = document.getElementById('trips-container');
+    container.appendChild(createTripGroup());
+  });
+
+  // Repeat Trips button
+  document.getElementById('repeat-trips').addEventListener('click', function () {
+    const repeatCount = parseInt(document.getElementById('repeat-count').value);
+    const breakMinutes = parseInt(document.getElementById('break-minutes').value);
+    const container = document.getElementById('trips-container');
+    const originalTrips = Array.from(container.querySelectorAll('.trip-group'));
+
+    if (originalTrips.length === 0 || repeatCount <= 0) return;
+
+    // Clone original data first
+    const tripsToRepeat = originalTrips.map(group => {
+      return {
+        route_num: group.querySelector('input[name="route_num[]"]').value,
+        start_time: group.querySelector('input[name="start_time[]"]').value,
+        end_time: group.querySelector('input[name="end_time[]"]').value,
+        start_at: group.querySelector('input[name="start_at[]"]').value,
+        end_at: group.querySelector('input[name="end_at[]"]').value,
+      };
+    });
+
+    // Clear the container
+    container.innerHTML = '';
+
+    let latestEndTime = null;
+
+    for (let i = 0; i < repeatCount; i++) {
+      tripsToRepeat.forEach(values => {
+        const trip = {
+          ...values
+        };
+
+        if (latestEndTime) {
+          trip.start_time = addMinutes(latestEndTime, breakMinutes);
+          const duration = (
+            new Date(`1970-01-01T${values.end_time}`) -
+            new Date(`1970-01-01T${values.start_time}`)
+          ) / 60000;
+          trip.end_time = addMinutes(trip.start_time, duration);
+        }
+
+        latestEndTime = trip.end_time;
+        container.appendChild(createTripGroup(trip));
+      });
+    }
+  });
+  async function fetchTimetable(routeID, direction, startTime) {
+    const url = `/api/timetable/${routeID}/${direction}?start_time=${startTime}`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("Failed to load timetable");
+    return await response.json();
+  }
+
+  document.getElementById("auto-generate-btn").addEventListener("click", async () => {
+    const firstStart = document.getElementById("auto-first-start").value;
+    const routeID = document.getElementById("auto-route-select").value;
+    const direction = document.getElementById("auto-direction").value;
+    const container = document.getElementById("trips-container");
+    const status = document.getElementById("auto-generate-status");
+
+    if (!firstStart) {
+      status.textContent = "Enter a start time first.";
+      return;
+    }
+
+    status.textContent = "Loading timetable…";
+
+    try {
+      // NEW: backend handles flipping + filtering
+      const trips = await fetchTimetable(routeID, direction, firstStart);
+
+      container.innerHTML = ""; // clear existing
+
+      const routes = JSON.parse(document.getElementById('route-data').textContent);
+      const selectedRoute = routes.find(r => r.id == routeID);
+
+      trips.forEach(t => {
+        const values = {
+          route_id: routeID,
+          route_num: selectedRoute ? selectedRoute.route_num : "",
+          start_time: t.start_time,
+          end_time: t.end_time,
+          start_at: t.start_stop,
+          end_at: t.end_stop,
+          inbound: t.inbound ?? (t.direction === "inbound")
+        };
+
+        container.appendChild(createTripGroup(values));
+      });
+
+      status.textContent = "Trips generated. You can edit them before saving.";
+
+    } catch (err) {
+      status.textContent = "Error loading timetable.";
+      console.error(err);
+    }
+  });
+
+
+  // Return HH:MM duration between two strings
+  function diffMinutes(start, end) {
+    const s = new Date(`1970-01-01T${start}`);
+    const e = new Date(`1970-01-01T${end}`);
+    return Math.round((e - s) / 60000);
+  }
+
+  document.getElementById("auto-generate-btn").addEventListener("click", async () => {
+    const firstStart = document.getElementById("auto-first-start").value;
+    const routeID = document.getElementById("auto-route-select").value;
+    const direction = document.getElementById("auto-direction").value;
+    const container = document.getElementById("trips-container");
+    const status = document.getElementById("auto-generate-status");
+
+    if (!firstStart) {
+      status.textContent = "Enter a start time first.";
+      return;
+    }
+
+    status.textContent = "Loading timetable…";
+
+    try {
+      const timetable = await fetchTimetable(routeID, direction);
+
+      /*
+          timetable = [
+              {
+                  "times": [ {"stop": "Foo", "time": "09:12"}, ... ],
+                  "start_stop": "Foo",
+                  "end_stop": "Bar"
+              },
+              ...
+          ]
+      */
+
+      // Find first trip with departure >= user input
+      let selected = timetable.filter(t => t.times[0].time >= firstStart);
+
+      if (selected.length === 0) {
+        status.textContent = "No trips available after that time.";
+        return;
+      }
+
+      // Clear manual list, we are previewing auto-gen
+      container.innerHTML = "";
+
+      let lastEnd = firstStart;
+
+      selected.forEach(t => {
+        const tripStart = t.times[0].time;
+        const tripEnd = t.times[t.times.length - 1].time;
+
+        if (tripStart < lastEnd) return; // overlaps previous
+
+        const routes = JSON.parse(document.getElementById('route-data').textContent);
+        const selectedRoute = routes.find(r => r.id == routeID);
+
+        const values = {
+          route_id: routeID,
+          route_num: selectedRoute ? selectedRoute.route_num : "",
+          start_time: tripStart,
+          end_time: tripEnd,
+          start_at: t.start_stop,
+          end_at: t.end_stop,
+        };
+
+        container.appendChild(createTripGroup(values));
+
+        lastEnd = tripEnd;
+      });
+
+      status.textContent = "Trips generated. You can edit them before saving.";
+
+    } catch (err) {
+      status.textContent = "Error loading timetable.";
+      console.error(err);
+    }
+  });
+</script>
+{% endblock %}

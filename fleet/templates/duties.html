@@ -1,0 +1,44 @@
+{% extends 'mbtbase.html' %}
+{% load static %}
+{% load custom_tags %}
+
+{% block extra_css %}
+<link rel="stylesheet" type="text/css" href="{% static 'css/narrow.css' %}">
+<style>
+    .name {
+        width: 100%;
+    }
+    
+    .services {
+        column-width: 12em;
+        column-gap: 1em;
+    }
+</style>
+{% endblock %}
+
+{% block title %}{{ operator.operator_name }} - {{ titles }}{% endblock %}
+
+{% block content %}
+<h2>{{ titles }}</h2>
+<div class="in-page-ad" id="body-ad-1">
+  <div class="incontent-ad-container" style="height:100px;">
+    <div id="AFM_inContent_ad" style="margin:auto;"></div>
+  </div>
+</div>
+{% if add_perm in user_perms or 'owner' in user_perms %}
+<button onclick='window.location.href="{% url 'add-'|add:title|lower|dashify operator.operator_slug %}"'>Add {{ title }}</button>
+{% endif %}
+{% if grouped_duties %}
+{% for day, duties in grouped_duties.items %}
+<h2>{{ day }}</h2>
+<ul class="services">
+    {% for duty in duties %}
+    <li class="route"><a href="{% url 'duty_detail' operator.operator_slug duty.id %}"><strong
+                class="name is-short">{{ duty.duty_name }}</strong></a></li>
+    {% endfor %}
+</ul>
+{% endfor %}
+{% else %}
+<p>No duties found.</p>
+{% endif %}
+{% endblock %}
