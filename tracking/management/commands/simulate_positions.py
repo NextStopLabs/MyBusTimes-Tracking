@@ -23,7 +23,13 @@ class Command(BaseCommand):
         active_trips = (    
             Trip.objects
             .filter(trip_start_at__lte=now, trip_end_at__gte=now, trip_missed=False)
-            .select_related("trip_vehicle", "trip_vehicle__operator", "trip_route")
+            .select_related(
+                "trip_vehicle", 
+                "trip_vehicle__operator", 
+                "trip_vehicle__livery", 
+                "trip_vehicle__vehicleType", 
+                "trip_route"
+            )
         )
 
         if not active_trips.exists():
@@ -93,12 +99,6 @@ class Command(BaseCommand):
             vehicle.current_trip = trip
             vehicle.updated_at = now
             vehicles_to_update.append(vehicle)
-
-            self.stdout.write(
-                self.style.SUCCESS(
-                    f"Prepared {vehicle} → lat={lat}, lon={lng}, heading={heading}"
-                )
-            )
 
         # ---------------------------------------------------------
         # 5. Bulk update vehicles
