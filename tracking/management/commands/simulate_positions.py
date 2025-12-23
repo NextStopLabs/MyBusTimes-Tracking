@@ -1,5 +1,6 @@
 from django.core.management.base import BaseCommand
 from django.utils import timezone
+from django.db.models import Q
 from tracking.models import Trip
 from fleet.models import fleet
 
@@ -18,11 +19,15 @@ class Command(BaseCommand):
         now = timezone.now()
 
         # ---------------------------------------------------------
-        # 1. Get active trips (start <= now <= end)
+        # 1. Get active trips (start <= now, and end >= now - 2 mins)
         # ---------------------------------------------------------
         active_trips = (    
             Trip.objects
-            .filter(trip_start_at__lte=now, trip_end_at__gte=now, trip_missed=False)
+            .filter(
+                trip_start_at__lte=now, 
+                trip_end_at__gte=now - timezone.timedelta(minutes=2),
+                trip_missed=False
+            )
             .select_related(
                 "trip_vehicle", 
                 "trip_vehicle__operator", 
