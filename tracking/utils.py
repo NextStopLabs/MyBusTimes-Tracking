@@ -170,7 +170,17 @@ def get_progress(trip, now=None):
     start = trip.trip_start_at
     end = trip.trip_end_at
     print(f"[DEBUG] get_progress: trip_id={trip.pk}, now={now}, start={start}, end={end}")
+    
     duration = (end - start).total_seconds()
+    
+    # Handle midnight crossing: if end time appears before start time,
+    # the trip spans midnight and we need to add 24 hours to the duration
+    if duration <= 0:
+        from datetime import timedelta
+        # Add 24 hours to get the correct duration for trips crossing midnight
+        duration = (end - start + timedelta(days=1)).total_seconds()
+        print(f"[DEBUG] get_progress: adjusted for midnight crossing, new duration={duration}s")
+    
     elapsed = (now - start).total_seconds()
     print(f"[DEBUG] get_progress: duration={duration}s, elapsed={elapsed}s")
     if elapsed <= 0:

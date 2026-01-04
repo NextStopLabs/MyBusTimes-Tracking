@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand
 from django.utils import timezone
-from django.db.models import Q
+from django.db.models import Q, F
 from tracking.models import Trip
 from fleet.models import fleet
 
@@ -20,12 +20,29 @@ class Command(BaseCommand):
 
         # ---------------------------------------------------------
         # 1. Get active trips (start <= now, and end >= now - 2 mins)
+        #    Also handle trips crossing midnight (end_at < start_at)
         # ---------------------------------------------------------
+        
+        # Normal trips: end time is after start time (same day)
+        normal_active = (
+            Q(trip_end_at__gte=F('trip_start_at')) &  # Not a midnight crossing
+            Q(trip_start_at__lte=now) &
+            Q(trip_end_at__gte=now - timezone.timedelta(minutes=2))
+        )
+        
+        # Midnight crossing trips: end time is before start time (crosses to next day)
+        # e.g., start=22:00, end=01:00 means end is actually next day
+        # Include these if they started within the last 26 hours (generous buffer)
+        midnight_crossing_active = (
+            Q(trip_end_at__lt=F('trip_start_at')) &  # Midnight crossing indicator
+            Q(trip_start_at__lte=now) &
+            Q(trip_start_at__gte=now - timezone.timedelta(hours=26))  # Started recently
+        )
+        
         active_trips = (    
             Trip.objects
             .filter(
-                trip_start_at__lte=now, 
-                trip_end_at__gte=now - timezone.timedelta(minutes=2),
+                (normal_active | midnight_crossing_active),
                 trip_missed=False
             )
             .select_related(
@@ -79,10 +96,18 @@ class Command(BaseCommand):
             if not coords:
                 continue
 
-            # Compute progress (0..1)
+            # Compute progress (0..1) - handles midnight crossing
             progress = get_progress(trip, now=now)
-
+            
+            # Skip trips that have already completed
+            # (needed because midnight crossing query is more permissive)
             if progress >= 1:
+                # Trip is complete, but check if it just ended (within 2 mins)
+                # If so, show it at the final position
+                duration = trip.get_duration_seconds()
+                elapsed = (now - trip.trip_start_at).total_seconds()
+                if elapsed > duration + 120:  # More than 2 mins past end
+                    continue
                 lat, lng = coords[-1]
                 heading = vehicle.sim_heading or 0
             else:

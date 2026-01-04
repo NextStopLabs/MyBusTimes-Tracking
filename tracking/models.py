@@ -38,6 +38,20 @@ class Trip(models.Model):
     
     history = HistoricalRecords()
 
+    def get_duration_seconds(self):
+        """
+        Returns the trip duration in seconds, handling midnight crossing.
+        If trip_end_at is before trip_start_at (same calendar day), 
+        it assumes the trip crosses midnight and adds 24 hours.
+        """
+        if not self.trip_start_at or not self.trip_end_at:
+            return 0
+        duration = (self.trip_end_at - self.trip_start_at).total_seconds()
+        if duration <= 0:
+            # Trip crosses midnight - add 24 hours
+            duration = (self.trip_end_at - self.trip_start_at + timedelta(days=1)).total_seconds()
+        return duration
+
     def clean(self):
         super().clean()
         now = timezone.now()
