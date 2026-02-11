@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MyBusTimes Tracking</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2rem; color: #222; }
+    h1 { margin-bottom: 0.5rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; background: #fafafa; }
+    .label { color: #666; font-size: 0.9rem; }
+    .value { font-size: 1.4rem; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>MyBusTimes Tracking</h1>
+  <p class="label">Status overview</p>
+
+  <div class="grid">
+    <div class="card">
+      <div class="label">Last updated tracking</div>
+      <div class="value">{{ last_updated|default:"No updates yet" }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Buses tracking</div>
+      <div class="value">{{ tracking_count }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Active trips</div>
+      <div class="value">{{ active_trips }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Total vehicles</div>
+      <div class="value">{{ total_vehicles }}</div>
+    </div>
+  </div>
+</body>
+</html>

@@ -97,45 +97,6 @@ class CustomUser(AbstractUser):
     last_ip = models.GenericIPAddressField(blank=True, null=True)
     last_active = models.DateTimeField(blank=True, null=True)
     banned = models.BooleanField(default=False)
-
-    forum_banned = models.BooleanField(default=False)
-    ticket_banned = models.BooleanField(default=False)
-    messaging_banned = models.BooleanField(default=False)
-    wiki_edit_banned = models.BooleanField(default=False)
-
-    banned_date = models.DateTimeField(blank=True, null=True)
-    banned_reason = models.TextField(blank=True, null=True)
-    discord_username = models.CharField(max_length=255, blank=True, null=True)
-    total_user_reports = models.PositiveIntegerField(default=0)
-    ad_free_until = models.DateTimeField(null=True, blank=True)
-    pfp = models.ImageField(upload_to='images/profile_pics/', default='images/default_profile_pic.png', blank=True, null=True)
-    banner = models.ImageField(upload_to='images/profile_banners/', default='images/default_banner.png', blank=True, null=True)
-    stripe_subscription_id = models.CharField(max_length=255, blank=True, null=True)
-    PLAN_CHOICES = [
-        ('free', 'Free'),
-        ('basic', 'Basic'),
-        ('pro', 'Pro'),
-    ]
-    
-    sub_plan = models.CharField(
-        max_length=10,
-        choices=PLAN_CHOICES,
-        default='free',
-    )
-
-    #Bus Buying stuff
-    buses_brought_count = models.PositiveIntegerField(default=0)
-    last_bus_purchase = models.DateTimeField(null=True, blank=True)
-
-    admin_notes = models.TextField(blank=True, null=True, help_text="Internal notes for admins only")
-
-    def is_ad_free(self):
-        return self.ad_free_until and self.ad_free_until > timezone.now()
-    
-    history = HistoricalRecords()
-
-    def __str__(self):
-        return self.username
     
 User = get_user_model()
 

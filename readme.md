@@ -7,6 +7,40 @@
 2. Keep debug enabled to disable captcha
 3. Only test on python 3.11.0
 
+# API usage
+
+## Update simulated positions
+
+POST `/api/trips/update_positions/`
+
+- Requires `X-Cron-Secret` header matching `CRON_SECRET` in your settings/env
+- Rate limited to 2 requests per minute per IP
+
+```bash
+curl -X POST \
+    -H "X-Cron-Secret: your_secret_here" \
+    http://localhost:8000/api/trips/update_positions/
+```
+
+### Possible responses
+- `200` `{ "status": "ok", "updating": true }`
+- `202` `{ "status": "already running" }`
+- `429` `{ "status": "rate limit exceeded" }`
+
+## Health check
+
+GET `/healthz/`
+
+```bash
+curl http://localhost:8000/healthz/
+```
+
+## Home page
+
+GET `/`
+
+Shows last tracking update, number of buses tracking, and summary stats.
+
 ## .env setup
 
 ```

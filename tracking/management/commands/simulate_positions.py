@@ -5,7 +5,7 @@ from django.core.cache import cache
 from datetime import timedelta
 from tracking.models import Trip
 from fleet.models import fleet
-from django.db import IntegrityError
+from django.db import IntegrityError, OperationalError, transaction
 from routes.models import routeStop
 import time
 
@@ -197,25 +197,74 @@ class Command(BaseCommand):
         # ---------------------------------------------------------
         if vehicles_to_update:
             t3 = time.time()
-            try:
-                fleet.objects.bulk_update(
-                    vehicles_to_update,
-                    ["sim_lat", "sim_lon", "sim_heading", "current_trip", "updated_at"],
-                    batch_size=500
-                )
-                self.stdout.write(f"Updated {len(vehicles_to_update)} vehicles in {time.time() - t3:.2f}s")
-            except IntegrityError as e:
-                # Bulk update failed due to FK integrity (race or missing trip). Fall back
-                # to per-vehicle save so we can skip problematic updates.
-                self.stderr.write(f"Bulk update IntegrityError: {e}. Falling back to per-vehicle updates.")
-                updated = 0
-                for v in vehicles_to_update:
-                    try:
-                        v.save(update_fields=["sim_lat", "sim_lon", "sim_heading", "current_trip", "updated_at"])
-                        updated += 1
-                    except IntegrityError as e2:
-                        self.stderr.write(f"Skipping vehicle {v.id} due to IntegrityError: {e2}")
-                self.stdout.write(f"Fallback updated {updated} vehicles in {time.time() - t3:.2f}s")
+            vehicles_by_id = {v.id: v for v in vehicles_to_update}
+            vehicle_ids = sorted(vehicles_by_id.keys())
+            attempts = 0
+
+            while True:
+                try:
+                    with transaction.atomic():
+                        # Lock rows in a consistent order and skip rows locked elsewhere.
+                        locked = list(
+                            fleet.objects.select_for_update(skip_locked=True)
+                            .filter(pk__in=vehicle_ids)
+                            .order_by("pk")
+                        )
+
+                        if not locked:
+                            self.stdout.write("No vehicles available for update; skipping.")
+                            break
+
+                        for v in locked:
+                            src = vehicles_by_id.get(v.id)
+                            if not src:
+                                continue
+                            v.sim_lat = src.sim_lat
+                            v.sim_lon = src.sim_lon
+                            v.sim_heading = src.sim_heading
+                            v.current_trip = src.current_trip
+                            v.updated_at = src.updated_at
+
+                        try:
+                            fleet.objects.bulk_update(
+                                locked,
+                                ["sim_lat", "sim_lon", "sim_heading", "current_trip", "updated_at"],
+                                batch_size=500
+                            )
+                            self.stdout.write(
+                                f"Updated {len(locked)} vehicles in {time.time() - t3:.2f}s"
+                            )
+                        except IntegrityError as e:
+                            # Bulk update failed due to FK integrity (race or missing trip). Fall back
+                            # to per-vehicle save so we can skip problematic updates.
+                            self.stderr.write(
+                                f"Bulk update IntegrityError: {e}. Falling back to per-vehicle updates."
+                            )
+                            updated = 0
+                            for v in locked:
+                                try:
+                                    v.save(update_fields=[
+                                        "sim_lat",
+                                        "sim_lon",
+                                        "sim_heading",
+                                        "current_trip",
+                                        "updated_at",
+                                    ])
+                                    updated += 1
+                                except IntegrityError as e2:
+                                    self.stderr.write(
+                                        f"Skipping vehicle {v.id} due to IntegrityError: {e2}"
+                                    )
+                            self.stdout.write(
+                                f"Fallback updated {updated} vehicles in {time.time() - t3:.2f}s"
+                            )
+                    break
+                except OperationalError as e:
+                    if "deadlock detected" in str(e).lower() and attempts < 2:
+                        attempts += 1
+                        time.sleep(0.2 * attempts)
+                        continue
+                    raise
         
         self.stdout.write(f"Total time: {time.time() - t0:.2f}s")
 

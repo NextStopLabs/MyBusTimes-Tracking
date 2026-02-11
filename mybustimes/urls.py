@@ -7,8 +7,11 @@ from django.conf import settings
 from django.urls import include, path
 from django.views.decorators.cache import cache_control
 from django.views.generic.base import RedirectView
+from tracking.views import home_view, healthz_view
 
 urlpatterns = [
+    path("", home_view, name="home"),
+    path("healthz/", healthz_view, name="healthz"),
     path('api/', include('api.urls')),  # Include your API app urls here
 ]
 
