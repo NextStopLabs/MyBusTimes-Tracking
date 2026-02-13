@@ -7,6 +7,82 @@
 2. Keep debug enabled to disable captcha
 3. Only test on python 3.11.0
 
+# How this works
+
+This project is a Django application that tracks bus fleets, trips, and live status.
+The core flow is:
+
+1. Data is stored in Django models (fleet, trips, routes, operators).
+2. A scheduled task hits a protected endpoint to simulate or update positions.
+3. A management command updates the database with new positions and trip state.
+4. The home page and APIs query the latest state to render stats and dashboards.
+
+## Key runtime components
+
+- **Django app**: Serves web pages and JSON endpoints.
+- **Management commands**: Background jobs that update positions and schedules.
+- **Cache layer**: Used for rate limiting and job locks.
+- **Database**: Stores fleet, trip, and tracking data.
+
+## Tracking update flow
+
+### 1) Scheduled trigger
+
+The endpoint `POST /api/trips/update_positions/` triggers the update.
+
+- Uses a shared-secret header: `X-Cron-Secret`.
+- Rate limited to 2 calls per minute per instance (cache key is per minute bucket).
+- Protected by a cache-based lock to avoid overlapping runs.
+
+### 2) Command execution
+
+If the request passes auth and rate limits, the view runs:
+
+```
+python manage.py simulate_positions
+```
+
+That command updates the fleet and trip state (positions, trip progress, etc).
+
+### 3) Response behavior
+
+- `200` indicates the update ran.
+- `202` means a previous run is still in progress.
+- `429` means the per-minute limit was exceeded.
+
+## Home page stats
+
+The home page (`GET /`) renders a summary for the last update and system status:
+
+- `last_updated`: Latest `fleet.updated_at` timestamp.
+- `tracking_count`: Number of vehicles with an active `current_trip`.
+- `total_vehicles`: Total number of fleet records.
+- `active_trips`: Trips that started and have not finished recently.
+
+`active_trips` uses two windows:
+
+- Normal: trips with `trip_end_at >= now - 2 minutes`.
+- Overnight/long trips: trips where `trip_end_at` is earlier than `trip_start_at`
+    and the start time is within the last 8 hours.
+
+## Health check
+
+`GET /healthz/` returns `{ "status": "ok" }` for uptime monitoring.
+
+## Key settings and environment
+
+- `CRON_SECRET`: Shared secret for the update endpoint.
+- `DEBUG`: Keep `True` in local dev to bypass captcha.
+- `CSRF_TRUSTED_ORIGINS`: Required for domain-based deployments.
+- Database and external services are configured via `.env` or settings.
+
+## Where to look in code
+
+- Endpoint logic: `tracking/views.py`
+- Models: `fleet/models.py`, `tracking/models.py`, `routes/models.py`
+- URLs: `tracking/urls.py` and `mybustimes/urls.py`
+- Commands: `tracking/management/commands/`
+
 # API usage
 
 ## Update simulated positions

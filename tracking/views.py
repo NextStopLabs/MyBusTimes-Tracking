@@ -17,14 +17,15 @@ from tracking.models import Trip
 @require_POST
 @csrf_exempt
 def simulate_positions_view(request):
-    # shared-secret auth
+    # Auth: shared secret header required for cron-triggered updates.
     expected = settings.CRON_SECRET
     provided = request.headers.get("X-Cron-Secret")
     if not expected or not provided or not secrets.compare_digest(expected, provided):
          return JsonResponse({"status": "nope"}, status=200)
 
     now = int(time.time())
-    window = now // 60  # current minute bucket
+    # Rate limit: max 2 calls per minute across the whole instance.
+    window = now // 60
     key = f"simulate_positions_calls_{window}"
 
     calls = cache.get(key, 0)
@@ -34,10 +35,10 @@ def simulate_positions_view(request):
             status=429
         )
 
-    # increment counter (expire after 60s)
+    # Increment the minute bucket counter (expires after 60s).
     cache.set(key, calls + 1, timeout=60)
 
-    # overlap protection
+    # Lock to prevent overlapping runs of the management command.
     if not cache.add("simulate_positions_lock", True, timeout=300):
         return JsonResponse({"status": "already running"}, status=202)
 
