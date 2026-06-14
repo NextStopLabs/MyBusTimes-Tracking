@@ -14,17 +14,16 @@ import secrets
 from fleet.models import fleet
 from tracking.models import Trip
 
+
 @require_POST
 @csrf_exempt
 def simulate_positions_view(request):
-    # Auth: shared secret header required for cron-triggered updates.
     expected = settings.CRON_SECRET
     provided = request.headers.get("X-Cron-Secret")
     if not expected or not provided or not secrets.compare_digest(expected, provided):
          return JsonResponse({"status": "nope"}, status=200)
 
     now = int(time.time())
-    # Rate limit: max 2 calls per minute across the whole instance.
     window = now // 60
     key = f"simulate_positions_calls_{window}"
 
@@ -35,10 +34,8 @@ def simulate_positions_view(request):
             status=429
         )
 
-    # Increment the minute bucket counter (expires after 60s).
     cache.set(key, calls + 1, timeout=60)
 
-    # Lock to prevent overlapping runs of the management command.
     if not cache.add("simulate_positions_lock", True, timeout=300):
         return JsonResponse({"status": "already running"}, status=202)
 

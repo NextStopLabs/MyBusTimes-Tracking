@@ -1,13 +1,13 @@
 import json
 
 from django.db import models
-from simple_history.models import HistoricalRecords
 from fleet.models import fleet
 from routes.models import route, duty
 from django.utils import timezone
 from datetime import timedelta
 from main.models import CustomUser
 from django.core.exceptions import ValidationError
+
 
 def default_tracking_data():
     return {
@@ -16,8 +16,10 @@ def default_tracking_data():
         "heading": 0,
     }
 
+
 def default_tracking_history():
     return []
+
 
 class Trip(models.Model):
     trip_id = models.AutoField(primary_key=True, db_index=True)
@@ -35,33 +37,26 @@ class Trip(models.Model):
     trip_missed = models.BooleanField(default=False, db_index=True)
     trip_inbound = models.BooleanField(null=True, blank=True, db_index=True)
     trip_board = models.ForeignKey(duty, on_delete=models.SET_NULL, null=True, blank=True, db_index=True)
-    
-    history = HistoricalRecords()
 
     def get_duration_seconds(self):
-        """
-        Returns the trip duration in seconds, handling midnight crossing.
-        If trip_end_at is before trip_start_at (same calendar day), 
-        it assumes the trip crosses midnight and adds 24 hours.
-        """
         if not self.trip_start_at or not self.trip_end_at:
             return 0
         duration = (self.trip_end_at - self.trip_start_at).total_seconds()
         if duration <= 0:
-            # Trip crosses midnight - add 24 hours
             duration = (self.trip_end_at - self.trip_start_at + timedelta(days=1)).total_seconds()
         return duration
 
     def clean(self):
         super().clean()
         now = timezone.now()
-        min_date = now - timedelta(days=365*10)  # 10 years back
-        max_date = now + timedelta(days=365*10)  # 10 years forward
+        min_date = now - timedelta(days=365*10)
+        max_date = now + timedelta(days=365*10)
 
         if self.trip_start_at and not (min_date <= self.trip_start_at <= max_date):
             raise ValidationError({'trip_start_at': "Start date must be within 10 years of today."})
         if self.trip_end_at and not (min_date <= self.trip_end_at <= max_date):
             raise ValidationError({'trip_end_at': "End date must be within 10 years of today."})
+
 
 class Tracking(models.Model):
     tracking_id = models.AutoField(primary_key=True, db_index=True)
@@ -77,10 +72,7 @@ class Tracking(models.Model):
     tracking_updated_at = models.DateTimeField(auto_now=True, db_index=True)
     trip_ended = models.BooleanField(default=False, db_index=True)
 
-    history = HistoricalRecords()
-
     def save(self, *args, **kwargs):
-        # Parse tracking_data if it's a string
         if isinstance(self.tracking_data, str):
             try:
                 tracking_data_dict = json.loads(self.tracking_data)
@@ -89,20 +81,12 @@ class Tracking(models.Model):
         else:
             tracking_data_dict = self.tracking_data
 
-        # Get or initialize history list
         history = self.tracking_history_data or []
-
-        # Make a copy of the dict to add timestamp
         record = tracking_data_dict.copy()
         record['timestamp'] = timezone.now().isoformat()
-
         history.append(record)
-
         self.tracking_history_data = history
-
-        # Save tracking_data as a string again if needed
         self.tracking_data = tracking_data_dict
-
         super().save(*args, **kwargs)
 
     class Meta:
