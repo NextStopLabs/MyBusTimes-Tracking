@@ -64,12 +64,6 @@ WSGI_APPLICATION = 'mybustimes.wsgi.application'
 try:
     from .settings_local import *
 except ImportError:
-    CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-            'LOCATION': os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"),
-        }
-    }
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
