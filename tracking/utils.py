@@ -124,6 +124,68 @@ def extract_coords_from_routeStop(rs):
     return coords or []
 
 
+def extract_stops_data(rs):
+    """
+    Extract structured stop data (name, coords, times, arrival_times, departure_times)
+    from a routeStop record.
+    Handles both list format and dict format (e.g. {"StopName_idx_N": {...}}).
+    Returns list of stop dicts sorted by order, or None if no stops found.
+    """
+    if not rs.stops:
+        return None
+
+    raw_items = []
+    if isinstance(rs.stops, dict):
+        for _key, v in rs.stops.items():
+            if isinstance(v, dict):
+                v["_key"] = _key
+                raw_items.append(v)
+    elif isinstance(rs.stops, list):
+        raw_items = [s for s in rs.stops if isinstance(s, dict)]
+
+    if not raw_items:
+        return None
+
+    result = []
+    for item in raw_items:
+        name = (item.get("stopname") or item.get("stop")
+                or item.get("name") or item.get("title"))
+        if not name:
+            continue
+
+        lat = item.get("lat") or item.get("latitude")
+        lng = item.get("lng") or item.get("longitude") or item.get("long")
+        if lat is None or lng is None:
+            cords = item.get("cords") or item.get("coords")
+            if cords:
+                try:
+                    lat_str, lng_str = cords.split(",", 1)
+                    lat = float(lat_str.strip())
+                    lng = float(lng_str.strip())
+                except (ValueError, TypeError):
+                    pass
+
+        order = item.get("order")
+        result.append({
+            "name": name,
+            "lat": float(lat) if lat is not None else None,
+            "lng": float(lng) if lng is not None else None,
+            "order": int(order) if order is not None else None,
+            "timing_point": bool(item.get("timing_point", False)),
+            "times": item.get("times") or [],
+            "departure_times": item.get("departure_times") or [],
+            "arrival_times": item.get("arrival_times") or [],
+        })
+
+    if not result:
+        return None
+
+    if any(s["order"] is not None for s in result):
+        result.sort(key=lambda x: (x["order"] if x["order"] is not None else 9999))
+
+    return result
+
+
 def extract_coords_and_last_stop(rs):
     # Prefer snapped route if present
     snapped = get_snapped_coords(rs)

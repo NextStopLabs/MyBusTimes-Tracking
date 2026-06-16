@@ -13,6 +13,7 @@ from tracking.utils import (
     calculate_heading,
     extract_coords_from_routeStop,
     extract_coords_and_last_stop,
+    extract_stops_data,
 )
 
 CACHE_KEY = "route_coords_cache"
@@ -99,16 +100,34 @@ class Command(BaseCommand):
             start = trip.trip_start_at
             end = trip.trip_end_at
 
-            if not start or not end:
+            if not start:
+                continue
+
+            route_data = coords_cache.get(trip.trip_route_id)
+            if not route_data:
+                continue
+
+            # Try stop-based positioning (with arrival/departure times)
+            stops = self._get_stops_for_trip(route_data, trip)
+            if stops:
+                lat, lng, heading = self._calculate_stop_position(stops, trip, now)
+                if lat is not None:
+                    vehicle.sim_lat = lat
+                    vehicle.sim_lon = lng
+                    vehicle.sim_heading = heading
+                    vehicle.current_trip = trip
+                    vehicle.updated_at = now
+                    vehicles_to_update.append(vehicle)
+                    seen_vehicles.add(vehicle.id)
+                    continue
+
+            # Fall back to coordinate-based interpolation
+            if not end:
                 continue
 
             is_midnight_crossing = end < start
 
             if not is_midnight_crossing and end < two_mins_ago:
-                continue
-
-            route_data = coords_cache.get(trip.trip_route_id)
-            if not route_data:
                 continue
 
             coords = self._get_coords_for_trip(route_data, trip)
@@ -246,39 +265,197 @@ class Command(BaseCommand):
 
         for i, rs in enumerate(stops_list):
             coords = extract_coords_from_routeStop(rs)
-            if not coords:
+            stops_data = extract_stops_data(rs)
+
+            if not coords and not stops_data:
                 continue
 
-            if i == 0:
-                result['outbound'] = coords
-            elif i == 1:
-                result['inbound'] = coords
+            direction_data = {'coords': coords or []}
 
-            _, last_stop = extract_coords_and_last_stop(rs)
+            if stops_data:
+                direction_data['stops'] = stops_data
+                last_stop_name = stops_data[-1]['name'] if stops_data else None
+            else:
+                _, last_stop_name = extract_coords_and_last_stop(rs)
+
+            if i == 0:
+                result['outbound'] = direction_data
+            elif i == 1:
+                result['inbound'] = direction_data
+
             result['directions'].append({
-                'coords': coords,
-                'last_stop': (last_stop or "").lower().strip()
+                **direction_data,
+                'last_stop': (last_stop_name or "").lower().strip()
             })
 
         return result
 
     def _get_coords_for_trip(self, route_data, trip):
         if trip.trip_inbound is False:
-            return route_data.get('inbound') or route_data.get('outbound')
+            entry = route_data.get('inbound') or route_data.get('outbound') or {}
+            return entry.get('coords') or entry
 
         if trip.trip_inbound is True:
-            return route_data.get('outbound')
+            entry = route_data.get('outbound') or {}
+            return entry.get('coords') or entry
 
         trip_end = (trip.trip_end_location or "").lower().strip()
 
         for d in route_data.get('directions', []):
-            if d['coords']:
+            coords = d.get('coords') or d
+            if isinstance(coords, list) and coords:
                 if not trip_end:
-                    return d['coords']
-                if d['last_stop'] and trip_end in d['last_stop']:
-                    return d['coords']
+                    return coords
+                if d.get('last_stop') and trip_end in d['last_stop']:
+                    return coords
 
-        return route_data.get('outbound') or route_data.get('inbound')
+        entry = route_data.get('outbound') or route_data.get('inbound') or {}
+        return entry.get('coords') or entry
+
+    def _get_stops_for_trip(self, route_data, trip):
+        """Get structured stops list for this trip's direction, or None if unavailable."""
+        entry = None
+        if trip.trip_inbound is False:
+            entry = route_data.get('inbound') or route_data.get('outbound') or {}
+        elif trip.trip_inbound is True:
+            entry = route_data.get('outbound') or {}
+        else:
+            trip_end = (trip.trip_end_location or "").lower().strip()
+            for d in route_data.get('directions', []):
+                if d.get('stops'):
+                    ls = (d.get('last_stop') or "").lower().strip()
+                    if not trip_end:
+                        entry = d
+                        break
+                    if ls and trip_end in ls:
+                        entry = d
+                        break
+            if not entry:
+                entry = route_data.get('outbound') or route_data.get('inbound') or {}
+
+        return entry.get('stops') if isinstance(entry, dict) else None
+
+    def _resolve_schedule_index(self, trip, stops):
+        """Determine which schedule column (trip_idx) this trip belongs to
+        by matching the trip's start time against the first stop's departure_times/times."""
+        if not stops or not trip.trip_start_at:
+            return 0
+
+        trip_time = trip.trip_start_at
+        trip_minutes = trip_time.hour * 60 + trip_time.minute
+
+        first_stop = stops[0]
+        schedule_times = (first_stop.get('departure_times')
+                          or first_stop.get('times') or [])
+
+        best_idx = 0
+        best_diff = 9999
+        for i, t_str in enumerate(schedule_times):
+            if not t_str:
+                continue
+            parts = t_str.split(':')
+            stop_minutes = int(parts[0]) * 60 + int(parts[1])
+            diff = abs(trip_minutes - stop_minutes)
+            diff = min(diff, abs(trip_minutes - (stop_minutes + 1440)))
+            diff = min(diff, abs((trip_minutes + 1440) - stop_minutes))
+            if diff < best_diff:
+                best_diff = diff
+                best_idx = i
+
+        return best_idx
+
+    def _get_active_stops(self, stops, schedule_idx):
+        """Filter stops to only those served on this schedule (part-route handling).
+        Stops with empty times[schedule_idx] mark the route endpoint."""
+        if not stops:
+            return []
+
+        active = []
+        for stop in stops:
+            t = (stop.get('times') or stop.get('departure_times') or [])
+            time_str = t[schedule_idx] if schedule_idx < len(t) else None
+            if time_str:
+                active.append(stop)
+            else:
+                break
+        return active
+
+    def _calculate_stop_position(self, stops, trip, now):
+        """Calculate vehicle position using per-stop arrival/departure times.
+        Returns (lat, lng, heading) or (None, None, None) if calculation fails."""
+
+        schedule_idx = self._resolve_schedule_index(trip, stops)
+        active_stops = self._get_active_stops(stops, schedule_idx)
+
+        if len(active_stops) < 2:
+            return None, None, None
+
+        # Build timed schedule: list of (minutes_from_ref, lat, lng)
+        schedule = []
+        for i, stop in enumerate(active_stops):
+            # Prefer departure_times for non-last stops, arrival_times for last
+            if i < len(active_stops) - 1:
+                times_arr = (stop.get('departure_times')
+                             or stop.get('times') or [])
+            else:
+                times_arr = (stop.get('arrival_times')
+                             or stop.get('times') or [])
+
+            time_str = times_arr[schedule_idx] if schedule_idx < len(times_arr) else None
+            if not time_str:
+                times_arr = stop.get('times') or []
+                time_str = times_arr[schedule_idx] if schedule_idx < len(times_arr) else None
+            if not time_str:
+                continue
+
+            parts = time_str.split(':')
+            minutes = int(parts[0]) * 60 + int(parts[1])
+
+            if i > 0 and minutes < schedule[-1][0]:
+                minutes += 1440
+
+            lat = stop.get('lat')
+            lng = stop.get('lng')
+            if lat is None or lng is None:
+                continue
+
+            schedule.append((minutes, lat, lng))
+
+        if len(schedule) < 2:
+            return None, None, None
+
+        # Current time relative to trip reference
+        trip_time = trip.trip_start_at
+        now_minutes = now.hour * 60 + now.minute
+        ref_minutes = trip_time.hour * 60 + trip_time.minute
+
+        if now_minutes < ref_minutes:
+            now_minutes += 1440
+
+        elapsed = now_minutes - ref_minutes
+
+        ref_base = schedule[0][0]
+        current_minutes = ref_base + elapsed
+
+        if current_minutes <= schedule[0][0]:
+            return schedule[0][1], schedule[0][2], 0.0
+
+        if current_minutes >= schedule[-1][0]:
+            return schedule[-1][1], schedule[-1][2], 0.0
+
+        for i in range(len(schedule) - 1):
+            t1 = schedule[i][0]
+            t2 = schedule[i + 1][0]
+            if t1 <= current_minutes <= t2:
+                seg_progress = 0.0 if t2 == t1 else (current_minutes - t1) / (t2 - t1)
+                lat1, lng1 = schedule[i][1], schedule[i][2]
+                lat2, lng2 = schedule[i + 1][1], schedule[i + 1][2]
+                lat = lat1 + (lat2 - lat1) * seg_progress
+                lng = lng1 + (lng2 - lng1) * seg_progress
+                heading = calculate_heading(lat, lng, lat2, lng2)
+                return lat, lng, heading
+
+        return schedule[-1][1], schedule[-1][2], 0.0
 
     def clear_old_positions(self, now):
         fifteen_mins_ago = now - timedelta(minutes=15)
