@@ -93,99 +93,102 @@ class Command(BaseCommand):
         seen_vehicles = set()
 
         for trip in active_trips:
-            vehicle = trip.trip_vehicle
-            if not vehicle or vehicle.id in seen_vehicles:
-                continue
-
-            start = trip.trip_start_at
-            end = trip.trip_end_at
-
-            if not start:
-                continue
-
-            route_data = coords_cache.get(trip.trip_route_id)
-            if not route_data:
-                continue
-
-            # Try stop-based positioning (with arrival/departure times)
-            stops = self._get_stops_for_trip(route_data, trip)
-            if stops:
-                lat, lng, heading = self._calculate_stop_position(stops, trip, now)
-                if lat is not None:
-                    vehicle.sim_lat = lat
-                    vehicle.sim_lon = lng
-                    vehicle.sim_heading = heading
-                    vehicle.current_trip = trip
-                    vehicle.updated_at = now
-                    vehicles_to_update.append(vehicle)
-                    seen_vehicles.add(vehicle.id)
+            try:
+                vehicle = trip.trip_vehicle
+                if not vehicle or vehicle.id in seen_vehicles:
                     continue
 
-            # Fall back to coordinate-based interpolation
-            if not end:
-                continue
+                start = trip.trip_start_at
+                end = trip.trip_end_at
 
-            is_midnight_crossing = end < start
+                if not start:
+                    continue
 
-            if not is_midnight_crossing and end < two_mins_ago:
-                continue
+                route_data = coords_cache.get(trip.trip_route_id)
+                if not route_data:
+                    continue
 
-            coords = self._get_coords_for_trip(route_data, trip)
-            if not coords:
-                continue
+                # Try stop-based positioning (with arrival/departure times)
+                stops = self._get_stops_for_trip(route_data, trip)
+                if stops:
+                    lat, lng, heading = self._calculate_stop_position(stops, trip, now)
+                    if lat is not None:
+                        vehicle.sim_lat = lat
+                        vehicle.sim_lon = lng
+                        vehicle.sim_heading = heading
+                        vehicle.current_trip = trip
+                        vehicle.updated_at = now
+                        vehicles_to_update.append(vehicle)
+                        seen_vehicles.add(vehicle.id)
+                        continue
 
-            duration = (end - start).total_seconds()
-            if duration <= 0:
-                duration += 86400
+                # Fall back to coordinate-based interpolation
+                if not end:
+                    continue
 
-            elapsed = (now - start).total_seconds()
+                is_midnight_crossing = end < start
 
-            if elapsed <= 0:
-                progress = 0.0
-            elif elapsed >= duration:
-                progress = 1.0
-            else:
-                progress = elapsed / duration
+                if not is_midnight_crossing and end < two_mins_ago:
+                    continue
 
-            if progress >= 1.0 and elapsed > duration + 120:
-                continue
+                coords = self._get_coords_for_trip(route_data, trip)
+                if not coords:
+                    continue
 
-            if progress >= 1.0:
-                lat, lng = coords[-1]
-                heading = vehicle.sim_heading or 0
-            else:
-                total_segments = len(coords) - 1
-                if total_segments <= 0:
-                    lat, lng = coords[0]
-                    heading = 0
+                duration = (end - start).total_seconds()
+                if duration <= 0:
+                    duration += 86400
+
+                elapsed = (now - start).total_seconds()
+
+                if elapsed <= 0:
+                    progress = 0.0
+                elif elapsed >= duration:
+                    progress = 1.0
                 else:
-                    segment_float = progress * total_segments
-                    seg_index = int(segment_float)
+                    progress = elapsed / duration
 
-                    if seg_index >= total_segments:
-                        lat, lng = coords[-1]
-                        seg_index = total_segments - 1
+                if progress >= 1.0 and elapsed > duration + 120:
+                    continue
+
+                if progress >= 1.0:
+                    lat, lng = coords[-1]
+                    heading = vehicle.sim_heading or 0
+                else:
+                    total_segments = len(coords) - 1
+                    if total_segments <= 0:
+                        lat, lng = coords[0]
+                        heading = 0
                     else:
-                        seg_progress = segment_float - seg_index
-                        lat1, lng1 = coords[seg_index]
-                        lat2, lng2 = coords[seg_index + 1]
-                        lat = lat1 + (lat2 - lat1) * seg_progress
-                        lng = lng1 + (lng2 - lng1) * seg_progress
+                        segment_float = progress * total_segments
+                        seg_index = int(segment_float)
 
-                    if seg_index >= len(coords) - 1:
-                        lat2, lng2 = coords[seg_index - 1] if seg_index > 0 else coords[0]
-                    else:
-                        lat2, lng2 = coords[seg_index + 1]
+                        if seg_index >= total_segments:
+                            lat, lng = coords[-1]
+                            seg_index = total_segments - 1
+                        else:
+                            seg_progress = segment_float - seg_index
+                            lat1, lng1 = coords[seg_index]
+                            lat2, lng2 = coords[seg_index + 1]
+                            lat = lat1 + (lat2 - lat1) * seg_progress
+                            lng = lng1 + (lng2 - lng1) * seg_progress
 
-                    heading = calculate_heading(lat, lng, lat2, lng2)
+                        if seg_index >= len(coords) - 1:
+                            lat2, lng2 = coords[seg_index - 1] if seg_index > 0 else coords[0]
+                        else:
+                            lat2, lng2 = coords[seg_index + 1]
 
-            vehicle.sim_lat = lat
-            vehicle.sim_lon = lng
-            vehicle.sim_heading = heading
-            vehicle.current_trip = trip
-            vehicle.updated_at = now
-            vehicles_to_update.append(vehicle)
-            seen_vehicles.add(vehicle.id)
+                        heading = calculate_heading(lat, lng, lat2, lng2)
+
+                vehicle.sim_lat = lat
+                vehicle.sim_lon = lng
+                vehicle.sim_heading = heading
+                vehicle.current_trip = trip
+                vehicle.updated_at = now
+                vehicles_to_update.append(vehicle)
+                seen_vehicles.add(vehicle.id)
+            except Exception as e:
+                self.stderr.write(f"Error processing trip {trip.trip_id}: {e}")
 
         self.stdout.write(f"Processing took {time.time() - t2:.2f}s")
 
@@ -278,10 +281,8 @@ class Command(BaseCommand):
             else:
                 _, last_stop_name = extract_coords_and_last_stop(rs)
 
-            if i == 0:
-                result['outbound'] = direction_data
-            elif i == 1:
-                result['inbound'] = direction_data
+            label = 'inbound' if rs.inbound else 'outbound'
+            result[label] = direction_data
 
             result['directions'].append({
                 **direction_data,
@@ -292,12 +293,14 @@ class Command(BaseCommand):
 
     def _get_coords_for_trip(self, route_data, trip):
         if trip.trip_inbound is False:
-            entry = route_data.get('inbound') or route_data.get('outbound') or {}
-            return entry.get('coords') or entry
+            entry = route_data.get('outbound') or route_data.get('inbound') or {}
+            coords = entry.get('coords') if isinstance(entry, dict) else entry
+            return coords if isinstance(coords, list) else []
 
         if trip.trip_inbound is True:
-            entry = route_data.get('outbound') or {}
-            return entry.get('coords') or entry
+            entry = route_data.get('inbound') or route_data.get('outbound') or {}
+            coords = entry.get('coords') if isinstance(entry, dict) else entry
+            return coords if isinstance(coords, list) else []
 
         trip_end = (trip.trip_end_location or "").lower().strip()
 
@@ -310,15 +313,16 @@ class Command(BaseCommand):
                     return coords
 
         entry = route_data.get('outbound') or route_data.get('inbound') or {}
-        return entry.get('coords') or entry
+        coords = entry.get('coords') if isinstance(entry, dict) else entry
+        return coords if isinstance(coords, list) else []
 
     def _get_stops_for_trip(self, route_data, trip):
         """Get structured stops list for this trip's direction, or None if unavailable."""
         entry = None
         if trip.trip_inbound is False:
-            entry = route_data.get('inbound') or route_data.get('outbound') or {}
+            entry = route_data.get('outbound') or route_data.get('inbound') or {}
         elif trip.trip_inbound is True:
-            entry = route_data.get('outbound') or {}
+            entry = route_data.get('inbound') or route_data.get('outbound') or {}
         else:
             trip_end = (trip.trip_end_location or "").lower().strip()
             for d in route_data.get('directions', []):
@@ -333,7 +337,9 @@ class Command(BaseCommand):
             if not entry:
                 entry = route_data.get('outbound') or route_data.get('inbound') or {}
 
-        return entry.get('stops') if isinstance(entry, dict) else None
+        if isinstance(entry, dict):
+            return entry.get('stops')
+        return None
 
     def _resolve_schedule_index(self, trip, stops):
         """Determine which schedule column (trip_idx) this trip belongs to
