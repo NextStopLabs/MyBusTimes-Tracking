@@ -1,3 +1,6 @@
+import threading
+
+from django.db import connection
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
@@ -21,7 +24,7 @@ def simulate_positions_view(request):
     expected = settings.CRON_SECRET
     provided = request.headers.get("X-Cron-Secret")
     if not expected or not provided or not secrets.compare_digest(expected, provided):
-         return JsonResponse({"status": "nope"}, status=200)
+        return JsonResponse({"status": "nope"}, status=200)
 
     now = int(time.time())
     window = now // 60
@@ -29,21 +32,24 @@ def simulate_positions_view(request):
 
     calls = cache.get(key, 0)
     if calls >= 2:
-        return JsonResponse(
-            {"status": "rate limit exceeded"},
-            status=429
-        )
+        return JsonResponse({"status": "rate limit exceeded"}, status=429)
 
     cache.set(key, calls + 1, timeout=60)
 
     if not cache.add("simulate_positions_lock", True, timeout=300):
         return JsonResponse({"status": "already running"}, status=202)
 
-    try:
-        call_command("simulate_positions")
-        return JsonResponse({"status": "ok", "updating": True}, status=200)
-    finally:
-        cache.delete("simulate_positions_lock")
+    def _run():
+        try:
+            call_command("simulate_positions")
+        finally:
+            cache.delete("simulate_positions_lock")
+            connection.close()
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    return JsonResponse({"status": "ok", "updating": True}, status=200)
 
 
 def home_view(request):

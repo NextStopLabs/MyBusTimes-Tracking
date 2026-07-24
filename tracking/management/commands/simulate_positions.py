@@ -127,19 +127,22 @@ class Command(BaseCommand):
         return coords_cache
 
     def _fetch_route_coords(self, route_ids, coords_cache):
-        rows = (
-            routeStop.objects.filter(route_id__in=route_ids)
-            .values_list("route_id", "inbound", "stops", "snapped_route")
-            .order_by("route_id", "id")
-        )
+        batch_size = 30
+        for i in range(0, len(route_ids), batch_size):
+            batch = route_ids[i : i + batch_size]
+            rows = (
+                routeStop.objects.filter(route_id__in=batch)
+                .values_list("route_id", "inbound", "stops", "snapped_route")
+                .order_by("route_id", "id")
+            )
 
-        groups = {}
-        for row in rows:
-            route_id = row[0]
-            groups.setdefault(route_id, []).append(row)
+            groups = {}
+            for row in rows:
+                route_id = row[0]
+                groups.setdefault(route_id, []).append(row)
 
-        for route_id, stops_data in groups.items():
-            coords_cache[route_id] = self._parse_route_coords(stops_data)
+            for route_id, stops_data in groups.items():
+                coords_cache[route_id] = self._parse_route_coords(stops_data)
 
         cache.set(CACHE_KEY, coords_cache, CACHE_TIMEOUT)
 
