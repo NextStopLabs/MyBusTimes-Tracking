@@ -77,7 +77,6 @@ class Command(BaseCommand):
                 "trip_end_location",
             )
             .order_by("trip_vehicle_id", "-trip_start_at")
-            .iterator(chunk_size=None)
         )
 
         vehicle_trips = {}
@@ -132,7 +131,6 @@ class Command(BaseCommand):
             routeStop.objects.filter(route_id__in=route_ids)
             .values_list("route_id", "inbound", "stops", "snapped_route")
             .order_by("route_id", "id")
-            .iterator(chunk_size=None)
         )
 
         groups = {}
