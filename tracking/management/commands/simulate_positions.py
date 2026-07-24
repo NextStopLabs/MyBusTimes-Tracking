@@ -75,7 +75,7 @@ class Command(BaseCommand):
             )
 
             route_stops_map = {}
-            for rs in route_stops_qs.iterator(chunk_size=500):
+            for rs in route_stops_qs.iterator(chunk_size=None):
                 route_stops_map.setdefault(rs.route_id, []).append(rs)
 
             for route_id, stops_list in route_stops_map.items():
