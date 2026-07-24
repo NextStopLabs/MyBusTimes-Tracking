@@ -5,15 +5,10 @@ from django.core.cache import cache
 from datetime import timedelta
 from tracking.models import Trip
 from fleet.models import fleet
-from django.db import IntegrityError, OperationalError, transaction
 from routes.models import routeStop
+from tracking.utils import calculate_heading
 import time
-
-from tracking.utils import (
-    calculate_heading,
-    extract_coords_from_routeStop,
-    extract_coords_and_last_stop,
-)
+import json
 
 CACHE_KEY = "route_coords_cache"
 CACHE_TIMEOUT = 3600
@@ -23,96 +18,221 @@ class Command(BaseCommand):
     help = "Simulate vehicle positions for all active trips"
 
     def handle(self, *args, **kwargs):
-        t0 = time.time()
+        t0 = time.monotonic()
         now = timezone.now()
-
         two_mins_ago = now - timedelta(minutes=2)
         eight_hours_ago = now - timedelta(hours=8)
 
-        normal_trips = Trip.objects.filter(
-            trip_missed=False,
-            trip_start_at__lte=now,
-            trip_end_at__gte=two_mins_ago,
-        ).select_related("trip_vehicle", "trip_route")
+        vehicle_trips = self._get_vehicle_trips(now, two_mins_ago, eight_hours_ago)
+        self.stdout.write(
+            f"Query took {time.monotonic() - t0:.2f}s, found {len(vehicle_trips)} vehicles"
+        )
 
-        midnight_trips = Trip.objects.filter(
-            trip_missed=False,
-            trip_start_at__lte=now,
-            trip_start_at__gte=eight_hours_ago,
-            trip_end_at__lt=F('trip_start_at'),
-        ).select_related("trip_vehicle", "trip_route")
-
-        active_trips = {t.trip_id: t for t in normal_trips}
-        for t in midnight_trips:
-            if t.trip_id not in active_trips:
-                active_trips[t.trip_id] = t
-
-        active_trips = list(active_trips.values())
-
-        self.stdout.write(f"Query took {time.time() - t0:.2f}s, found {len(active_trips)} trips")
-
-        if not active_trips:
-            self.stdout.write("No active trips found.")
+        if not vehicle_trips:
             self.clear_old_positions(now)
             return
 
         self.clear_old_positions(now)
 
-        t1 = time.time()
-        route_ids = {t.trip_route_id for t in active_trips if t.trip_route_id}
+        t1 = time.monotonic()
+        route_coords = self._get_route_coords(vehicle_trips)
+        self.stdout.write(
+            f"Route coords in {time.monotonic() - t1:.2f}s"
+        )
 
-        coords_cache = cache.get(CACHE_KEY) or {}
+        t2 = time.monotonic()
+        updates = self._compute_positions(vehicle_trips, route_coords, now, two_mins_ago)
+        self.stdout.write(f"Processing took {time.monotonic() - t2:.2f}s")
 
-        routes_to_fetch = {rid for rid in route_ids if rid not in coords_cache}
-        cached_count = len(route_ids) - len(routes_to_fetch)
-
-        if routes_to_fetch:
-            route_stops_qs = (
-                routeStop.objects
-                .filter(route_id__in=routes_to_fetch)
-                .only("id", "route_id", "inbound", "stops", "snapped_route")
-                .order_by("route_id", "id")
+        if updates:
+            t3 = time.monotonic()
+            fleet.objects.bulk_update(
+                updates,
+                ["sim_lat", "sim_lon", "sim_heading", "current_trip", "updated_at"],
+                batch_size=500,
+            )
+            self.stdout.write(
+                f"Updated {len(updates)} vehicles in {time.monotonic() - t3:.2f}s"
             )
 
-            route_stops_map = {}
-            for rs in route_stops_qs.iterator(chunk_size=None):
-                route_stops_map.setdefault(rs.route_id, []).append(rs)
+        self.stdout.write(f"Total time: {time.monotonic() - t0:.2f}s")
 
-            for route_id, stops_list in route_stops_map.items():
-                coords_cache[route_id] = self._parse_route_coords(stops_list)
+    def _get_vehicle_trips(self, now, two_mins_ago, eight_hours_ago):
+        rows = (
+            Trip.objects.filter(trip_missed=False, trip_start_at__lte=now)
+            .filter(
+                Q(trip_end_at__gte=two_mins_ago)
+                | Q(
+                    trip_end_at__lt=F("trip_start_at"),
+                    trip_start_at__gte=eight_hours_ago,
+                )
+            )
+            .values(
+                "trip_id",
+                "trip_vehicle_id",
+                "trip_route_id",
+                "trip_start_at",
+                "trip_end_at",
+                "trip_inbound",
+                "trip_end_location",
+            )
+            .order_by("trip_vehicle_id", "-trip_start_at")
+            .iterator(chunk_size=None)
+        )
 
-            cache.set(CACHE_KEY, coords_cache, CACHE_TIMEOUT)
+        vehicle_trips = {}
+        for row in rows:
+            vid = row["trip_vehicle_id"]
+            if vid not in vehicle_trips:
+                vehicle_trips[vid] = row
 
-            self.stdout.write(f"Fetched {len(routes_to_fetch)} routes in {time.time() - t1:.2f}s (cached: {cached_count})")
-        else:
-            self.stdout.write(f"All {len(route_ids)} routes from cache ({time.time() - t1:.3f}s)")
+        return vehicle_trips
 
-        t2 = time.time()
-        vehicles_to_update = []
-        seen_vehicles = set()
+    def clear_old_positions(self, now):
+        fifteen_mins_ago = now - timedelta(minutes=15)
+        eight_hours_ago = now - timedelta(hours=8)
 
-        for trip in active_trips:
-            vehicle = trip.trip_vehicle
-            if not vehicle or vehicle.id in seen_vehicles:
+        ended_trip_ids = Trip.objects.filter(
+            Q(trip_end_at__gte=F("trip_start_at"), trip_end_at__lt=fifteen_mins_ago)
+            | Q(
+                trip_end_at__lt=F("trip_start_at"),
+                trip_start_at__lt=eight_hours_ago,
+            )
+        ).values_list("pk", flat=True)
+
+        updated_count = fleet.objects.filter(
+            current_trip_id__in=ended_trip_ids
+        ).update(
+            sim_lat=None,
+            sim_lon=None,
+            sim_heading=None,
+            current_trip=None,
+            updated_at=None,
+        )
+
+        if updated_count:
+            self.stdout.write(f"Cleared {updated_count} old positions.")
+
+    def _get_route_coords(self, vehicle_trips):
+        coords_cache = cache.get(CACHE_KEY) or {}
+        route_ids = {
+            t["trip_route_id"]
+            for t in vehicle_trips.values()
+            if t["trip_route_id"]
+        }
+        missing = [rid for rid in route_ids if rid not in coords_cache]
+
+        if missing:
+            self._fetch_route_coords(missing, coords_cache)
+
+        return coords_cache
+
+    def _fetch_route_coords(self, route_ids, coords_cache):
+        rows = (
+            routeStop.objects.filter(route_id__in=route_ids)
+            .values_list("route_id", "inbound", "stops", "snapped_route")
+            .order_by("route_id", "id")
+            .iterator(chunk_size=None)
+        )
+
+        groups = {}
+        for row in rows:
+            route_id = row[0]
+            groups.setdefault(route_id, []).append(row)
+
+        for route_id, stops_data in groups.items():
+            coords_cache[route_id] = self._parse_route_coords(stops_data)
+
+        cache.set(CACHE_KEY, coords_cache, CACHE_TIMEOUT)
+
+    def _parse_route_coords(self, stops_data):
+        result = {"inbound": None, "outbound": None, "directions": []}
+
+        for i, (route_id, inbound, stops, snapped_route) in enumerate(stops_data):
+            snapped_coords = self._parse_snapped(snapped_route)
+
+            if snapped_coords:
+                coords = snapped_coords
+                last_stop = ""
+            elif isinstance(stops, list):
+                coords, last_stop = self._parse_stops(stops)
+            else:
                 continue
 
-            start = trip.trip_start_at
-            end = trip.trip_end_at
+            if not coords:
+                continue
 
+            if i == 0:
+                result["outbound"] = coords
+            elif i == 1:
+                result["inbound"] = coords
+
+            result["directions"].append(
+                {
+                    "coords": coords,
+                    "last_stop": (last_stop or "").lower().strip(),
+                }
+            )
+
+        return result
+
+    @staticmethod
+    def _parse_snapped(snapped_route):
+        if not snapped_route:
+            return None
+        try:
+            data = json.loads(snapped_route)
+            coords = [(float(p[1]), float(p[0])) for p in data if isinstance(p, (list, tuple)) and len(p) == 2]
+            return coords if coords else None
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_stops(stops):
+        coords = []
+        last_stop_name = ""
+        for stop in stops:
+            if not isinstance(stop, dict):
+                continue
+            sname = stop.get("stop") or stop.get("name") or stop.get("title")
+            if sname:
+                last_stop_name = str(sname)
+            cords = stop.get("cords") or stop.get("coords")
+            if cords:
+                try:
+                    lat_str, lng_str = cords.split(",")
+                    coords.append((float(lat_str.strip()), float(lng_str.strip())))
+                    continue
+                except (ValueError, AttributeError):
+                    pass
+            lat = stop.get("lat") or stop.get("latitude")
+            lng = stop.get("lng") or stop.get("longitude") or stop.get("long")
+            if lat is not None and lng is not None:
+                try:
+                    coords.append((float(lat), float(lng)))
+                except (ValueError, TypeError):
+                    pass
+        return coords, last_stop_name
+
+    def _compute_positions(self, vehicle_trips, route_coords, now, two_mins_ago):
+        updates = []
+
+        for vid, trip in vehicle_trips.items():
+            route_id = trip["trip_route_id"]
+            if not route_id:
+                continue
+
+            route_data = route_coords.get(route_id)
+            coords = self._select_coords(route_data, trip)
+            if not coords:
+                continue
+
+            start = trip["trip_start_at"]
+            end = trip["trip_end_at"]
             if not start or not end:
                 continue
 
-            is_midnight_crossing = end < start
-
-            if not is_midnight_crossing and end < two_mins_ago:
-                continue
-
-            route_data = coords_cache.get(trip.trip_route_id)
-            if not route_data:
-                continue
-
-            coords = self._get_coords_for_trip(route_data, trip)
-            if not coords:
+            if not (end < start) and end < two_mins_ago:
                 continue
 
             duration = (end - start).total_seconds()
@@ -133,12 +253,12 @@ class Command(BaseCommand):
 
             if progress >= 1.0:
                 lat, lng = coords[-1]
-                heading = vehicle.sim_heading or 0
+                heading = 0.0
             else:
                 total_segments = len(coords) - 1
                 if total_segments <= 0:
                     lat, lng = coords[0]
-                    heading = 0
+                    heading = 0.0
                 else:
                     segment_float = progress * total_segments
                     seg_index = int(segment_float)
@@ -154,149 +274,45 @@ class Command(BaseCommand):
                         lng = lng1 + (lng2 - lng1) * seg_progress
 
                     if seg_index >= len(coords) - 1:
-                        lat2, lng2 = coords[seg_index - 1] if seg_index > 0 else coords[0]
+                        lat2, lng2 = (
+                            coords[seg_index - 1] if seg_index > 0 else coords[0]
+                        )
                     else:
                         lat2, lng2 = coords[seg_index + 1]
 
                     heading = calculate_heading(lat, lng, lat2, lng2)
 
-            vehicle.sim_lat = lat
-            vehicle.sim_lon = lng
-            vehicle.sim_heading = heading
-            vehicle.current_trip = trip
-            vehicle.updated_at = now
-            vehicles_to_update.append(vehicle)
-            seen_vehicles.add(vehicle.id)
+            updates.append(
+                fleet(
+                    id=vid,
+                    sim_lat=lat,
+                    sim_lon=lng,
+                    sim_heading=heading,
+                    current_trip_id=trip["trip_id"],
+                    updated_at=now,
+                )
+            )
 
-        self.stdout.write(f"Processing took {time.time() - t2:.2f}s")
+        return updates
 
-        if vehicles_to_update:
-            t3 = time.time()
-            vehicles_by_id = {v.id: v for v in vehicles_to_update}
-            vehicle_ids = sorted(vehicles_by_id.keys())
-            attempts = 0
+    @staticmethod
+    def _select_coords(route_data, trip):
+        if not route_data:
+            return None
 
-            while True:
-                try:
-                    with transaction.atomic():
-                        locked = list(
-                            fleet.objects.select_for_update(skip_locked=True)
-                            .filter(pk__in=vehicle_ids)
-                            .order_by("pk")
-                        )
+        if trip["trip_inbound"] is False:
+            return route_data.get("inbound") or route_data.get("outbound")
 
-                        if not locked:
-                            self.stdout.write("No vehicles available for update; skipping.")
-                            break
+        if trip["trip_inbound"] is True:
+            return route_data.get("outbound")
 
-                        for v in locked:
-                            src = vehicles_by_id.get(v.id)
-                            if not src:
-                                continue
-                            v.sim_lat = src.sim_lat
-                            v.sim_lon = src.sim_lon
-                            v.sim_heading = src.sim_heading
-                            v.current_trip = src.current_trip
-                            v.updated_at = src.updated_at
+        trip_end = (trip.get("trip_end_location") or "").lower().strip()
 
-                        try:
-                            fleet.objects.bulk_update(
-                                locked,
-                                ["sim_lat", "sim_lon", "sim_heading", "current_trip", "updated_at"],
-                                batch_size=500
-                            )
-                            self.stdout.write(
-                                f"Updated {len(locked)} vehicles in {time.time() - t3:.2f}s"
-                            )
-                        except IntegrityError as e:
-                            self.stderr.write(
-                                f"Bulk update IntegrityError: {e}. Falling back to per-vehicle updates."
-                            )
-                            updated = 0
-                            for v in locked:
-                                try:
-                                    v.save(update_fields=[
-                                        "sim_lat", "sim_lon", "sim_heading",
-                                        "current_trip", "updated_at",
-                                    ])
-                                    updated += 1
-                                except IntegrityError as e2:
-                                    self.stderr.write(
-                                        f"Skipping vehicle {v.id} due to IntegrityError: {e2}"
-                                    )
-                            self.stdout.write(
-                                f"Fallback updated {updated} vehicles in {time.time() - t3:.2f}s"
-                            )
-                    break
-                except OperationalError as e:
-                    if "deadlock detected" in str(e).lower() and attempts < 2:
-                        attempts += 1
-                        time.sleep(0.2 * attempts)
-                        continue
-                    raise
-
-        self.stdout.write(f"Total time: {time.time() - t0:.2f}s")
-
-    def _parse_route_coords(self, stops_list):
-        result = {
-            'inbound': None,
-            'outbound': None,
-            'directions': []
-        }
-
-        for i, rs in enumerate(stops_list):
-            coords = extract_coords_from_routeStop(rs)
-            if not coords:
-                continue
-
-            if i == 0:
-                result['outbound'] = coords
-            elif i == 1:
-                result['inbound'] = coords
-
-            _, last_stop = extract_coords_and_last_stop(rs)
-            result['directions'].append({
-                'coords': coords,
-                'last_stop': (last_stop or "").lower().strip()
-            })
-
-        return result
-
-    def _get_coords_for_trip(self, route_data, trip):
-        if trip.trip_inbound is False:
-            return route_data.get('inbound') or route_data.get('outbound')
-
-        if trip.trip_inbound is True:
-            return route_data.get('outbound')
-
-        trip_end = (trip.trip_end_location or "").lower().strip()
-
-        for d in route_data.get('directions', []):
-            if d['coords']:
+        for d in route_data.get("directions", []):
+            if d["coords"]:
                 if not trip_end:
-                    return d['coords']
-                if d['last_stop'] and trip_end in d['last_stop']:
-                    return d['coords']
+                    return d["coords"]
+                if d["last_stop"] and trip_end in d["last_stop"]:
+                    return d["coords"]
 
-        return route_data.get('outbound') or route_data.get('inbound')
-
-    def clear_old_positions(self, now):
-        fifteen_mins_ago = now - timedelta(minutes=15)
-        eight_hours_ago = now - timedelta(hours=8)
-
-        updated_count = fleet.objects.filter(
-            current_trip__isnull=False
-        ).filter(
-            Q(current_trip__trip_end_at__gte=F('current_trip__trip_start_at'),
-              current_trip__trip_end_at__lt=fifteen_mins_ago) |
-            Q(current_trip__trip_end_at__lt=F('current_trip__trip_start_at'),
-              current_trip__trip_start_at__lt=eight_hours_ago)
-        ).update(
-            sim_lat=None,
-            sim_lon=None,
-            sim_heading=None,
-            current_trip=None,
-            updated_at=None
-        )
-        if updated_count > 0:
-            self.stdout.write(f"Cleared {updated_count} old positions.")
+        return route_data.get("outbound") or route_data.get("inbound")
