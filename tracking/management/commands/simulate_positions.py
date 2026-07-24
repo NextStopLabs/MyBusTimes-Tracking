@@ -13,6 +13,16 @@ import json
 CACHE_KEY = "route_coords_cache"
 CACHE_TIMEOUT = 3600
 
+TRIP_FIELDS = (
+    "trip_id",
+    "trip_vehicle_id",
+    "trip_route_id",
+    "trip_start_at",
+    "trip_end_at",
+    "trip_inbound",
+    "trip_end_location",
+)
+
 
 class Command(BaseCommand):
     help = "Simulate vehicle positions for all active trips"
@@ -36,9 +46,7 @@ class Command(BaseCommand):
 
         t1 = time.monotonic()
         route_coords = self._get_route_coords(vehicle_trips)
-        self.stdout.write(
-            f"Route coords in {time.monotonic() - t1:.2f}s"
-        )
+        self.stdout.write(f"Route coords in {time.monotonic() - t1:.2f}s")
 
         t2 = time.monotonic()
         updates = self._compute_positions(vehicle_trips, route_coords, now, two_mins_ago)
@@ -46,11 +54,7 @@ class Command(BaseCommand):
 
         if updates:
             t3 = time.monotonic()
-            fleet.objects.bulk_update(
-                updates,
-                ["sim_lat", "sim_lon", "sim_heading", "current_trip", "updated_at"],
-                batch_size=500,
-            )
+            self._bulk_update_vehicles(updates)
             self.stdout.write(
                 f"Updated {len(updates)} vehicles in {time.monotonic() - t3:.2f}s"
             )
@@ -58,29 +62,33 @@ class Command(BaseCommand):
         self.stdout.write(f"Total time: {time.monotonic() - t0:.2f}s")
 
     def _get_vehicle_trips(self, now, two_mins_ago, eight_hours_ago):
-        rows = (
-            Trip.objects.filter(trip_missed=False, trip_start_at__lte=now)
-            .filter(
-                Q(trip_end_at__gte=two_mins_ago)
-                | Q(
-                    trip_end_at__lt=F("trip_start_at"),
-                    trip_start_at__gte=eight_hours_ago,
-                )
+        normal = (
+            Trip.objects.filter(
+                trip_missed=False,
+                trip_start_at__lte=now,
+                trip_end_at__gte=two_mins_ago,
             )
-            .values(
-                "trip_id",
-                "trip_vehicle_id",
-                "trip_route_id",
-                "trip_start_at",
-                "trip_end_at",
-                "trip_inbound",
-                "trip_end_location",
+            .values(*TRIP_FIELDS)
+            .order_by()
+        )
+
+        midnight = (
+            Trip.objects.filter(
+                trip_missed=False,
+                trip_start_at__lte=now,
+                trip_start_at__gte=eight_hours_ago,
+                trip_end_at__lt=F("trip_start_at"),
             )
-            .order_by("trip_vehicle_id", "-trip_start_at")
+            .values(*TRIP_FIELDS)
+            .order_by()
         )
 
         vehicle_trips = {}
-        for row in rows:
+        for row in normal:
+            vid = row["trip_vehicle_id"]
+            if vid not in vehicle_trips:
+                vehicle_trips[vid] = row
+        for row in midnight:
             vid = row["trip_vehicle_id"]
             if vid not in vehicle_trips:
                 vehicle_trips[vid] = row
@@ -183,7 +191,11 @@ class Command(BaseCommand):
             return None
         try:
             data = json.loads(snapped_route)
-            coords = [(float(p[1]), float(p[0])) for p in data if isinstance(p, (list, tuple)) and len(p) == 2]
+            coords = [
+                (float(p[1]), float(p[0]))
+                for p in data
+                if isinstance(p, (list, tuple)) and len(p) == 2
+            ]
             return coords if coords else None
         except (json.JSONDecodeError, TypeError, ValueError):
             return None
@@ -283,18 +295,28 @@ class Command(BaseCommand):
 
                     heading = calculate_heading(lat, lng, lat2, lng2)
 
-            updates.append(
-                fleet(
-                    id=vid,
-                    sim_lat=lat,
-                    sim_lon=lng,
-                    sim_heading=heading,
-                    current_trip_id=trip["trip_id"],
-                    updated_at=now,
-                )
-            )
+            updates.append((vid, lat, lng, heading, trip["trip_id"], now))
 
         return updates
+
+    @staticmethod
+    def _bulk_update_vehicles(updates):
+        from django.db import connection
+        from psycopg2.extras import execute_values
+
+        sql = """
+            UPDATE fleet AS f SET
+              sim_lat       = v.lat,
+              sim_lon       = v.lon,
+              sim_heading   = v.heading,
+              current_trip_id = v.trip_id,
+              updated_at    = v.updated_at
+            FROM (VALUES %s) AS v(id, lat, lon, heading, trip_id, updated_at)
+            WHERE f.id = v.id
+        """
+
+        with connection.cursor() as cursor:
+            execute_values(cursor, sql, updates, page_size=2000)
 
     @staticmethod
     def _select_coords(route_data, trip):
