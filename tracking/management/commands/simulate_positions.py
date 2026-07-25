@@ -313,7 +313,7 @@ class Command(BaseCommand):
               sim_heading   = v.heading,
               current_trip_id = v.trip_id,
               updated_at    = v.updated_at
-            FROM (VALUES %%s) AS v(id, lat, lon, heading, trip_id, updated_at)
+            FROM (VALUES %s) AS v(id, lat, lon, heading, trip_id, updated_at)
             WHERE f.id = v.id
         """
 
