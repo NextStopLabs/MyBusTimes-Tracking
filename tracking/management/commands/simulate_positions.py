@@ -303,15 +303,17 @@ class Command(BaseCommand):
     def _bulk_update_vehicles(updates):
         from django.db import connection
         from psycopg2.extras import execute_values
+        from fleet.models import fleet
 
-        sql = """
-            UPDATE fleet AS f SET
+        table = fleet._meta.db_table
+        sql = f"""
+            UPDATE {table} AS f SET
               sim_lat       = v.lat,
               sim_lon       = v.lon,
               sim_heading   = v.heading,
               current_trip_id = v.trip_id,
               updated_at    = v.updated_at
-            FROM (VALUES %s) AS v(id, lat, lon, heading, trip_id, updated_at)
+            FROM (VALUES %%s) AS v(id, lat, lon, heading, trip_id, updated_at)
             WHERE f.id = v.id
         """
 
